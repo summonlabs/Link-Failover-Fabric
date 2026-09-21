@@ -1,0 +1,36 @@
+# Build trees
+/build/
+/build-*/
+/out/
+/install/
+_install/
+cmake-build-*/
+
+# Local state, journals, snapshots produced by running the runtime
+*.jrnl
+*.snap
+*.jrnl.1
+*.snap.tmp
+/state/
+/run/
+*.lfflog
+
+# Test / tool scratch
+/tmp/
+*.tmp
+*.log
+*.dmp
+*.pdb
+*.ilk
+*.obj
+*.exe
+*.lib
+*.exp
+
+# Editor / OS
+.vs/
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
