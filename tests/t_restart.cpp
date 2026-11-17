@@ -6,7 +6,10 @@
 #include "framework.hpp"
 #include "support.hpp"
 
+#include <chrono>
+#include <fstream>
 #include <string>
+#include <thread>
 
 // The declarations under test live in lff / lff::test; the cases themselves are
 // registered at global scope, so the directives are repeated here.
@@ -364,4 +367,38 @@ LFF_TEST(restart, policy_and_topology_generations_survive_restart) {
     LFF_CHECK_EQ(engine.value().topology().generation.value(), 7ull);
     LFF_CHECK_EQ(engine.value().topology().links.size(), std::size_t{4});
     expect_ok(engine.value().close(), "close");
+}
+
+LFF_TEST(restart, a_checkpoint_waits_for_a_reader_of_the_snapshot) {
+    RestartHarness harness("snapshot-reader");
+    StoreOptions options;
+    options.directory = harness.dir.path();
+    options.fabric = harness.fixture.fabric;
+    options.policy = harness.fixture.policy;
+    options.topology = harness.fixture.topology;
+    Result<LineageStore> store = LineageStore::open(options);
+    LFF_CHECK(store.ok());
+    if (!store.ok()) {
+        return;
+    }
+    LFF_CHECK(store.value().checkpoint().ok());
+    bool reader_opened = false;
+    bool checkpointed = false;
+    {
+        // Another tool reading the store (an inspection, a scan) holds the
+        // snapshot open while the checkpoint replaces it, and closes it shortly
+        // after.
+        std::ifstream reader(harness.dir.path() / "lineage.snap", std::ios::binary);
+        reader_opened = reader.is_open();
+        std::thread writer([&store, &checkpointed] { checkpointed = store.value().checkpoint().ok(); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        reader.close();
+        writer.join();
+    }
+    LFF_CHECK(reader_opened);
+    // The checkpoint is not lost because a reader had the snapshot open for a
+    // moment, and the store keeps working.
+    LFF_CHECK(checkpointed);
+    LFF_CHECK(store.value().checkpoint().ok());
+    store.value().close();
 }

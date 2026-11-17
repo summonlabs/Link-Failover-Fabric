@@ -109,7 +109,13 @@ struct Server::Impl {
     std::thread accept_thread;
     mutable std::mutex registry_mu;
     std::vector<std::shared_ptr<SessionState>> sessions;
-    std::vector<std::thread> session_threads;
+    // Each session thread is kept with its session, so a finished one (id 0)
+    // can be joined and dropped while the server keeps running.
+    struct SessionThread {
+        std::shared_ptr<SessionState> session;
+        std::thread thread;
+    };
+    std::vector<SessionThread> session_threads;
     bool torn_down{false};
 
     void request_stop() {
@@ -159,14 +165,15 @@ struct Server::Impl {
         detach_accept_thread();
         detail::close_socket(listener);
         listener = detail::kInvalidSocket;
-        std::vector<std::thread> threads;
+        std::vector<SessionThread> threads;
         {
             std::lock_guard<std::mutex> guard(registry_mu);
             threads.swap(session_threads);
             sessions.clear();
         }
         const std::thread::id self = std::this_thread::get_id();
-        for (std::thread& thread : threads) {
+        for (SessionThread& entry : threads) {
+            std::thread& thread = entry.thread;
             if (!thread.joinable()) {
                 continue;
             }
@@ -189,6 +196,22 @@ struct Server::Impl {
                 } else {
                     ++it;
                 }
+            }
+            // A finished session's thread was kept until teardown, so a
+            // long-running server held one thread handle per session it had
+            // ever served. It is joined here instead, outside the lock.
+            for (auto it = session_threads.begin(); it != session_threads.end();) {
+                if (it->session->id == 0) {
+                    finished.push_back(std::move(it->thread));
+                    it = session_threads.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (std::thread& thread : finished) {
+            if (thread.joinable()) {
+                thread.join();
             }
         }
     }
@@ -668,8 +691,8 @@ Result<std::unique_ptr<Server>> Server::start(const ServerOptions& options) {
                 session->socket.store(accepted.value());
                 impl->sessions.push_back(session);
                 impl->sessions_accepted.fetch_add(1);
-                impl->session_threads.emplace_back(
-                    [impl, session]() { impl->serve(session); });
+                impl->session_threads.push_back(Impl::SessionThread{
+                    session, std::thread([impl, session]() { impl->serve(session); })});
             }
             impl->reap_finished_sessions();
         }

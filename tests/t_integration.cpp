@@ -10,6 +10,16 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 // The declarations under test live in lff / lff::test; the cases themselves are
 // registered at global scope, so the directives are repeated here.
 using namespace lff;
@@ -292,4 +302,50 @@ LFF_TEST(integration, unknown_operation_frame_is_refused) {
         make_replacement(harness.fixture, "beta", 2, ObservationState::Up, 1000, 4000, 1, true,
                          "monitor", client.value()->incarnation(), 1, 1));
     expect_ok(status, "valid replacement report");
+}
+
+#if defined(_WIN32)
+LFF_TEST(integration, finished_sessions_release_their_threads) {
+    ServerHarness harness("threads");
+    {
+        Result<std::unique_ptr<Client>> warm = Client::connect(harness.endpoint(), "warm");
+        LFF_CHECK(warm.ok());
+        if (warm.ok()) {
+            warm.value()->close();
+        }
+    }
+    DWORD before = 0;
+    const bool counted_before = ::GetProcessHandleCount(::GetCurrentProcess(), &before) != 0;
+    constexpr int kSessions = 100;
+    int served = 0;
+    for (int index = 0; index < kSessions; ++index) {
+        Result<std::unique_ptr<Client>> client = Client::connect(harness.endpoint(), "cycle");
+        if (client.ok()) {
+            ++served;
+            client.value()->close();
+        }
+    }
+    DWORD after = 0;
+    const bool counted_after = ::GetProcessHandleCount(::GetCurrentProcess(), &after) != 0;
+    LFF_CHECK(counted_before && counted_after);
+    LFF_CHECK_EQ(served, kSessions);
+    // A retained session thread keeps its handle, so growth that tracks the
+    // session count is the defect.
+    LFF_CHECK(after < before + 64);
+}
+#endif
+
+LFF_TEST(integration, a_second_server_cannot_take_a_listening_port) {
+    ServerHarness harness("port");
+    ServerOptions options;
+    options.endpoint = harness.endpoint();
+    options.engine = &harness.engine.value();
+    options.max_sessions = 4;
+    Result<std::unique_ptr<Server>> second = Server::start(options);
+    // Two coordinators must never share one listening port: the second start fails.
+    const bool second_started = second.ok();
+    if (second_started) {
+        (void)second.value()->shutdown();
+    }
+    LFF_CHECK(!second_started);
 }

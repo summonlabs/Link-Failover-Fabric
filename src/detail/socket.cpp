@@ -107,7 +107,9 @@ Result<SocketHandle> create_listener(const Endpoint& endpoint, int backlog, Endp
         }
         const int one = 1;
 #if defined(_WIN32)
-        ::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one),
+        // SO_REUSEADDR on Windows lets a second socket bind a port that is still
+        // listening; exclusive use makes that second bind fail instead.
+        ::setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&one),
                      sizeof(one));
 #else
         ::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
